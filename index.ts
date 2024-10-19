@@ -33,18 +33,21 @@ export function extractDomain(link: string): string {
     return url.hostname;
 }
 
-async function _isSpam(links: string[], spamLinkDomains: string[], redirectionDepth: number): Promise<boolean> {
+async function _isSpam(links: string[], spamLinkDomains: string[], redirectionDepth: number, memo: Map<string, boolean>): Promise<boolean> {
 
     // I will assume that each link will have redirectionDepth many attempts to
     // check if it is spam.
-
-    // We will TRY TO use bottom-up dynamic programming to solve this problem.
-    // First we will just try to do this recursively.
     if (links.length === 0) return false;
 
     // For each link, check if it is spam.
     // First, check if the domain is in the spamLinkDomains.
     const link = links[0];
+
+    // Construct the key for the memoization as the combination of the link and
+    // the redirectionDepth. The separation character is '|', which is not
+    // used as a character in the URL specification.
+    const key = `${link}|${redirectionDepth}`;
+    if (memo.has(key)) return memo.get(key)!;
 
     const domain = extractDomain(link);
     if (spamLinkDomains.includes(domain)) return true;
@@ -63,7 +66,7 @@ async function _isSpam(links: string[], spamLinkDomains: string[], redirectionDe
                 // If the redirected domain is not in the spamLinkDomains, we
                 // will recursively check the redirected URL.
                 const redirectedLinks = [res.url];
-                found1 = await _isSpam(redirectedLinks, spamLinkDomains, redirectionDepth - 1);
+                found1 = await _isSpam(redirectedLinks, spamLinkDomains, redirectionDepth - 1, memo);
             }
         }
 
@@ -80,18 +83,21 @@ async function _isSpam(links: string[], spamLinkDomains: string[], redirectionDe
 
         // If the anchor links are not spam, we will recursively check the
         // anchor links.
-        found2 = await _isSpam(nonSpamAnchorLinks, spamLinkDomains, redirectionDepth - 1);
+        found2 = await _isSpam(nonSpamAnchorLinks, spamLinkDomains, redirectionDepth - 1, memo);
     }
 
     // Take out the first link and recursively check the rest of the links.
-    const found3 = await _isSpam(links.slice(1), spamLinkDomains, redirectionDepth);
+    const found3 = await _isSpam(links.slice(1), spamLinkDomains, redirectionDepth, memo);
 
-    return found1 || found2 || found3;
+    // Memoize the result.
+    const result = found1 || found2 || found3;
+    memo.set(key, result);
+    return result;
 }
 
 export async function isSpam(content: string, spamLinkDomains: string[], redirectionDepth: number): Promise<boolean> {
     const links = extractLinks(content);
-    return await _isSpam(links, spamLinkDomains, redirectionDepth);
+    return await _isSpam(links, spamLinkDomains, redirectionDepth, new Map());
 }
 
 async function test() {
