@@ -1,5 +1,10 @@
 /**
  * Extracts all links from the content.
+ * Its not the complete HTTP URL regex, but does matches the following URL:
+ * - <PROTOCOL>://<HOSTNAME>/<PATH>?<QUERY>#<FRAGMENT>
+ * 
+ * Username, password, and port are not included as they seem to no be very
+ * relevant.
  *
  * @param   {string[]}  content  The content to extract links from.
  *
@@ -7,46 +12,98 @@
  */
 export function extractLinks(content: string): string[] {
 
-    return content.match(/https?:\/\/[^ ]+/g) || [];
-}
+    // console.log(`Extracted links from ${content}:`);
+    const links = content.match(/https?:\/\/[a-zA-Z0-9\-\.]+(?:\/[^\s?#"']*)?(?:\?[^\s#"']*)?(?:#[^\s"']*)?/g) || [];
+    // console.log(links);
 
+    return links;
+}
+/**
+ * Extracts the domain from a link using the URL's hostname.
+ *
+ * @param   {string}  link  A valid HTTP link.
+ *
+ * @return  {string}        The domain of the link.
+ */
 export function extractDomain(link: string): string {
 
-    const url = new URL(link);
-    console.log(url);
+    // console.log(link);
 
+    const url = new URL(link);
     return url.hostname;
 }
-console.log(extractDomain("http://moiming.page.link/exam?_impl=1&test=1") === "moiming.page.link");
-console.log(extractDomain("http://docs.github.com/repos") === "docs.github.com");
-console.log(extractDomain("http://sub.naver.com/repos") === "docs.github.com");
 
+async function _isSpam(links: string[], spamLinkDomains: string[], redirectionDepth: number): Promise<boolean> {
 
-function isSpam(content: string, spamLinkDomains: string[], redirectionDepth: number): boolean {
-
-    // Extract links from content.
-    const links = extractLinks(content);
+    // I will assume that each link will have redirectionDepth many attempts to
+    // check if it is spam.
 
     // We will TRY TO use bottom-up dynamic programming to solve this problem.
     // First we will just try to do this recursively.
+    if (links.length === 0) return false;
 
     // For each link, check if it is spam.
     // First, check if the domain is in the spamLinkDomains.
-    for (let link of links) {
-        const domain = extractDomain(link);
-        if (spamLinkDomains.includes(domain)) {
-            return true;
-        }
-    }
+    const link = links[0];
+
+    const domain = extractDomain(link);
+    if (spamLinkDomains.includes(domain)) return true;
 
     // Second, use 1 redirection to make a request to the link and check if the
     // response is a redirected(301 or 302) URL which is in the spamLinkDomains.
-    // TODO: Implement this.
+    let found1 = false;
+    let found2 = false;
+    if (redirectionDepth > 0) {
+        // console.log(`Fetching ${link}`);
+        const res = await fetch(link);
+        if (res.redirected) {
+            const redirectedDomain = extractDomain(res.url);
+            if (spamLinkDomains.includes(redirectedDomain)) return true;
+            else {
+                // If the redirected domain is not in the spamLinkDomains, we
+                // will recursively check the redirected URL.
+                const redirectedLinks = [res.url];
+                found1 = await _isSpam(redirectedLinks, spamLinkDomains, redirectionDepth - 1);
+            }
+        }
 
+        // Third, if the response if instead a HTML page, find any anchor tags
+        // and check if the href is in the spamLinkDomains. If so, return true.
+        const html = await res.text();
+        const anchorLinks = extractLinks(html);
+        const nonSpamAnchorLinks = [];
+        for (const anchorLink of anchorLinks) {
+            const anchorDomain = extractDomain(anchorLink);
+            if (spamLinkDomains.includes(anchorDomain)) return true;
+            else nonSpamAnchorLinks.push(anchorLink);
+        }
 
-    // Third, if the response if instead a HTML page, find any anchor tags and
-    // check if the href is in the spamLinkDomains. 
-    // TODO: Implement this.
+        // If the anchor links are not spam, we will recursively check the
+        // anchor links.
+        found2 = await _isSpam(nonSpamAnchorLinks, spamLinkDomains, redirectionDepth - 1);
+    }
 
-    return false;
+    // Take out the first link and recursively check the rest of the links.
+    const found3 = await _isSpam(links.slice(1), spamLinkDomains, redirectionDepth);
+
+    return found1 || found2 || found3;
 }
+
+export async function isSpam(content: string, spamLinkDomains: string[], redirectionDepth: number): Promise<boolean> {
+    const links = extractLinks(content);
+    return await _isSpam(links, spamLinkDomains, redirectionDepth);
+}
+
+async function test() {
+    console.log(await isSpam("http://moiming.page.link/exam?_impl=1&test=1", ["moiming.page.link"], 1) === true);
+    console.log(await isSpam("http://moiming.page.link/exam?_impl=1&test=1", ["moiming.page.link"], 2) === true);
+    console.log(await isSpam("http://moiming.page.link/exam?_impl=1&test=1", ["moiming.page.link"], 0) === true);
+
+    console.log(await isSpam("spam spam https://moiming.page.link/exam?_imcp=1", ["docs.github.com"], 1) === false);
+    console.log(await isSpam("spam spam https://moiming.page.link/exam?_imcp=1", ["moiming.page.link"], 1) === true);
+    console.log(await isSpam("spam spam https://moiming.page.link/exam?_imcp=1", ["github.com"], 2) === true);
+    console.log(await isSpam("spam spam https://moiming.page.link/exam?_imcp=1", ["docs.github.com"], 2) === false);
+    console.log(await isSpam("spam spam https://moiming.page.link/exam?_imcp=1", ["docs.github.com"], 3) === true);
+}
+
+// test();
